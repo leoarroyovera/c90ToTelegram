@@ -1,0 +1,7 @@
+work/
+*.session
+*.session-journal
+.env
+state.sqlite
+c90.log
+__pycache__/
