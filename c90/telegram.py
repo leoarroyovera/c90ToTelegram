@@ -6,6 +6,7 @@ from pathlib import Path
 
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
+from telethon.tl import types
 from telethon.tl.functions.channels import CreateChannelRequest
 # Los temas viven en functions.messages, no en functions.channels.
 from telethon.tl.functions.messages import (CreateForumTopicRequest,
@@ -13,6 +14,7 @@ from telethon.tl.functions.messages import (CreateForumTopicRequest,
 from telethon.tl.types import ForumTopic
 
 from . import config, organize
+from .fast_upload import upload_file_fast
 from .progress import Progress, human
 
 log = logging.getLogger("c90.telegram")
@@ -139,6 +141,14 @@ def split_file(path: Path, chunk=None):
     return parts
 
 
+async def upload_file_parallel(client, path: Path, progress_callback=None):
+    """Sube un archivo con multiples conexiones TCP reales al mismo
+    datacenter (ver c90.fast_upload). Devuelve un InputFileBig/InputSizedFile
+    utilizable en send_file(file=...).
+    """
+    return await upload_file_fast(client, path, progress_callback=progress_callback)
+
+
 CAPTION_MAX = 1024
 AUDIO_EXT = (".flac", ".mp3", ".wav", ".m4a", ".ogg", ".ape", ".wma")
 
@@ -246,13 +256,20 @@ async def send_files(client, channel, files, caption=None, reply_to=None, quiet=
         for attempt in range(config.MAX_RETRIES):
             try:
                 prog = Progress("  subida", size) if show else None
+                cb = (lambda c, t, p=prog: p.update(c, t)) if prog else None
+                # Subida propia en paralelo: client.send_file() usa
+                # upload_file() de Telethon, que manda las partes una por
+                # una esperando el ACK de cada una. Para archivos grandes
+                # eso es mucho mas lento que Telegram Desktop/Web.
+                handle = await upload_file_parallel(client, f, progress_callback=cb)
                 msg = await client.send_file(
-                    channel, str(f),
+                    channel, handle,
                     caption=caption if i == 0 else None,
                     parse_mode="html",
                     reply_to=reply_to,
                     force_document=True,
-                    progress_callback=(lambda c, t, p=prog: p.update(c, t)) if prog else None,
+                    file_size=size,
+                    attributes=[types.DocumentAttributeFilename(f.name)],
                 )
                 if prog:
                     prog.finish()
